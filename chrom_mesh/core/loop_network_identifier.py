@@ -12,35 +12,19 @@ Analyzes regulatory depth using BFS to classify genes into Deep and Shallow regu
 import pandas as pd
 import numpy as np
 import networkx as nx
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy import stats
 from collections import defaultdict
-from typing import Optional, Dict, List, Tuple, Set, Any
+from typing import Dict, List, Any
 import logging
 from pathlib import Path
-import warnings
 
-# Configure logging
-logger = logging.getLogger(__name__)
-warnings.filterwarnings('ignore')
+
+
+logger = logging.getLogger("Chrom-MESH.Identifier")
 
 class RegulatoryNetworkAnalyzer:
     """
     Analyze regulatory depth of genes based on 3D chromatin topology.
     
-    This class builds a network from annotated loops and classifies genes into:
-    - Deep Regulation: Genes with both Tier 1 (direct E-P) and Tier 2 (E-E) enhancers.
-    - Shallow Regulation: Genes with only Tier 1 (direct E-P) enhancers.
-    
-    Parameters
-    ----------
-    loop_file : str or Path
-        Path to annotated loop file (CSV/TSV) containing 'interaction_type'.
-    enhancer_file : str or Path
-        Path to enhancer BED file.
-    output_dir : str or Path, optional
-        Directory to save outputs (default: current directory).
     """
     
     def __init__(
@@ -52,11 +36,7 @@ class RegulatoryNetworkAnalyzer:
         self.loop_file = Path(loop_file)
         self.enhancer_file = Path(enhancer_file)
         self.output_dir = Path(output_dir)
-        
-        # Ensure output directory exists
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Data containers
         self.loops = None
         self.enhancers = None
         self.graph = None
@@ -68,7 +48,6 @@ class RegulatoryNetworkAnalyzer:
         logger.info("RegulatoryNetworkAnalyzer initialized")
 
     def _detect_separator(self, file_path: Path) -> str:
-        """Detect file separator (comma or tab)"""
         with open(file_path, 'r') as f:
             first_line = f.readline()
             if ',' in first_line and first_line.count(',') > first_line.count('\t'):
@@ -76,7 +55,6 @@ class RegulatoryNetworkAnalyzer:
             return '\t'
 
     def _split_items(self, item_string: Any) -> List[str]:
-        """Split comma-separated string into list, filtering empty/nan"""
         if pd.isna(item_string):
             return []
         s = str(item_string).strip()
@@ -84,10 +62,18 @@ class RegulatoryNetworkAnalyzer:
             return []
         return [x.strip() for x in s.split(',') if x.strip() and x.strip().lower() != 'nan']
 
+    def _normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df.columns = [str(c).replace("\ufeff", "").strip() for c in df.columns]
+        return df
+
     def _create_column_mapping(self):
         """Map standard internal names to actual CSV column names"""
         possible_mappings = {
-            'interaction_type': ['interaction_type', 'Interaction_Type', 'InteractionType'],
+            'intersection_type': [
+            'intersection_type', 'Intersection_Type', 'IntersectionType',
+            'interaction_type', 'Interaction_Type', 'InteractionType'
+            ],
             'p_l_genes': ['P_L_genes', 'p_l_genes', 'PL_genes'],
             'p_r_genes': ['P_R_genes', 'p_r_genes', 'PR_genes'],
             'e_l_ids': ['E_L_IDs', 'E_L_ids', 'e_l_ids', 'EL_IDs'],
@@ -107,30 +93,28 @@ class RegulatoryNetworkAnalyzer:
                 self.col_map[key] = None
         
         # Validate critical columns
-        required = ['interaction_type', 'p_l_genes', 'p_r_genes', 'e_l_ids', 'e_r_ids']
+        required = ['intersection_type', 'p_l_genes', 'p_r_genes', 'e_l_ids', 'e_r_ids']
         missing = [k for k in required if self.col_map[k] is None]
         if missing:
             raise ValueError(f"Missing required columns in loop file: {missing}")
 
     def load_data(self):
-        """Load input files with robust format detection"""
         logger.info("Loading data...")
         
-        # 1. Load Loops
         sep = self._detect_separator(self.loop_file)
         self.loops = pd.read_csv(self.loop_file, sep=sep)
+        self.loops = self._normalize_columns(self.loops)
         logger.info(f"Loaded {len(self.loops)} loops from {self.loop_file.name}")
-        
-        # Map columns
+
         self._create_column_mapping()
         
         # 2. Load Enhancers
         e_sep = self._detect_separator(self.enhancer_file)
         try:
-            # Try loading with header
             self.enhancers = pd.read_csv(self.enhancer_file, sep=e_sep)
+            self.enhancers = self._normalize_columns(self.enhancers)
+
             if 'enhancer_id' not in self.enhancers.columns and len(self.enhancers.columns) >= 4:
-                # Assuming standard BED: chr, start, end, id
                 self.enhancers = pd.read_csv(
                     self.enhancer_file, sep=e_sep, header=None, 
                     names=['chr', 'start', 'end', 'enhancer_id']
@@ -143,7 +127,7 @@ class RegulatoryNetworkAnalyzer:
 
     def build_network(self) -> nx.Graph:
         """
-        Build regulatory network using interaction_type logic.
+        Build regulatory network using intersection_type logic.
         Tier 1: Enhancer-Promoter (Cross-anchor matching)
         Tier 2: Enhancer-Enhancer
         """
@@ -157,7 +141,7 @@ class RegulatoryNetworkAnalyzer:
         
         # --- Process Tier 1: Enhancer-Promoter ---
         # Logic: If interaction is E-P, connect Genes on one side to Enhancers on the other
-        tier1_mask = self.loops[self.col_map['interaction_type']] == 'Enhancer-Promoter'
+        tier1_mask = self.loops[self.col_map['intersection_type']] == 'Enhancer-Promoter'
         tier1_loops = self.loops[tier1_mask]
         
         for _, row in tier1_loops.iterrows():
@@ -192,7 +176,7 @@ class RegulatoryNetworkAnalyzer:
                     stats_counter['tier1_edges'] += 1
 
         # --- Process Tier 2: Enhancer-Enhancer ---
-        tier2_mask = self.loops[self.col_map['interaction_type']] == 'Enhancer-Enhancer'
+        tier2_mask = self.loops[self.col_map['intersection_type']] == 'Enhancer-Enhancer'
         tier2_loops = self.loops[tier2_mask]
         
         for _, row in tier2_loops.iterrows():
@@ -214,6 +198,7 @@ class RegulatoryNetworkAnalyzer:
                     stats_counter['tier2_edges'] += 1
 
         logger.info(f"Network built: {self.graph.number_of_nodes()} nodes, "
+                    f"{self.graph.number_of_edges()} unique edges, "
                     f"Tier1 Edges: {stats_counter['tier1_edges']}, "
                     f"Tier2 Edges: {stats_counter['tier2_edges']}")
         return self.graph
@@ -296,6 +281,11 @@ class RegulatoryNetworkAnalyzer:
 
     def visualize(self):
         """Generate statistical visualizations"""
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError as e:
+            raise ImportError("Visualization requires matplotlib and seaborn.") from e
+
         if not self.gene_layers:
             logger.warning("No analysis results to visualize. Run analyze() first.")
             return
@@ -395,31 +385,21 @@ class RegulatoryNetworkAnalyzer:
         }
 
 
-# --- Command Line Interface ---
-
-def main():
-    import argparse
-    import sys
+def run_identify(args):
+    """
+    Entry point for the chrom-mesh CLI.
     
-    # Setup logging for CLI
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-
-    parser = argparse.ArgumentParser(
-        description="Chromatin Multi-Enhancer Loop Network Analysis (chrom-MESH core).",
-        formatter_class=argparse.RawTextHelpFormatter
-    )
+    Parameters:
+    -----------
+    args : argparse.Namespace
+        Arguments passed from cli.py, including:
+        - loop_file: Path to loops
+        - enhancer_file: Path to enhancers
+        - output_dir: Where to save results
+        - viz: Boolean, whether to generate plots
+    """
+    logger.info("🚀 Starting Regulatory Depth Analysis...")
     
-    parser.add_argument("-l", "--loop_file", required=True, help="Input annotated loop file (CSV/TSV)")
-    parser.add_argument("-e", "--enhancer_file", required=True, help="Input Enhancer BED file")
-    parser.add_argument("-o", "--output_dir", default=".", help="Output directory (default: current)")
-    parser.add_argument("--viz", action="store_true", help="Generate visualization plots")
-
-    args = parser.parse_args()
-
     try:
         analyzer = RegulatoryNetworkAnalyzer(
             loop_file=args.loop_file,
@@ -427,25 +407,114 @@ def main():
             output_dir=args.output_dir
         )
         
-        # Run pipeline
-        analyzer.analyze()
+        analyzer.load_data()
+        analyzer.build_network()
+        results_df = analyzer.analyze()
         analyzer.save_results()
-        
-        if args.viz:
+        if hasattr(args, 'viz') and args.viz:
             analyzer.visualize()
-            
-        # Print summary
         stats = analyzer.get_statistics()
         logger.info("=== Analysis Summary ===")
         for k, v in stats.items():
-            if isinstance(v, float):
-                logger.info(f"{k}: {v:.2f}")
-            else:
-                logger.info(f"{k}: {v}")
-                
+            val = f"{v:.2f}" if isinstance(v, float) else v
+            logger.info(f" - {k.replace('_', ' ').title()}: {val}")
+            
+        logger.info(f"✅ Analysis complete. Results saved to: {args.output_dir}")
+        return results_df
+
     except Exception as e:
-        logger.error(f"Analysis failed: {e}")
-        sys.exit(1)
+        logger.error(f"❌ Analysis failed: {str(e)}")
+        raise  
+
+
+def main():
+    import argparse
+    import sys
+    
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+    parser = argparse.ArgumentParser(description="Chrom-MESH Identifier")
+    parser.add_argument("-l", "--loop_file", required=True)
+    parser.add_argument("-e", "--enhancer_file", required=True)
+    parser.add_argument("-o", "--output_dir", default=".")
+    parser.add_argument("--viz", action="store_true")
+
+    args = parser.parse_args()
+    run_identify(args)
+
+def run_analyze(
+    loop_file=None,
+    enhancer_file=None,
+    output_dir=".",
+    save=True
+) -> pd.DataFrame:
+    """
+    Compatible analyze entry:
+    - run_analyze(args_namespace)
+    - run_analyze(loop_file=..., enhancer_file=..., output_dir=..., save=True)
+    """
+    if hasattr(loop_file, "__dict__") and enhancer_file is None:
+        args = loop_file
+
+        loop_file = (
+            getattr(args, "loops", None)
+            or getattr(args, "loop_file", None)
+            or getattr(args, "loop", None)
+            or getattr(args, "l", None)
+        )
+        enhancer_file = (
+            getattr(args, "enhancers", None)
+            or getattr(args, "enhancer_file", None)
+            or getattr(args, "enhancer", None)
+            or getattr(args, "e", None)
+        )
+        output_dir = (
+            getattr(args, "output", None)
+            or getattr(args, "output_dir", None)
+            or getattr(args, "outdir", None)
+            or getattr(args, "o", None)
+            or output_dir
+        )
+
+        min_tier1 = getattr(args, "min_tier1", 1)
+        min_tier2 = getattr(args, "min_tier2", 1)
+        save = getattr(args, "save", save)
+    else:
+        min_tier1, min_tier2 = 1, 1
+
+    if loop_file is None or enhancer_file is None:
+        raise ValueError(
+            f"run_analyze requires loop_file and enhancer_file. "
+            f"Got loop_file={loop_file}, enhancer_file={enhancer_file}"
+        )
+
+    output_dir = Path(output_dir)
+    if output_dir.suffix in {".csv", ".tsv", ".txt"}:
+        output_dir = output_dir.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    analyzer = RegulatoryNetworkAnalyzer(
+        loop_file=str(loop_file),
+        enhancer_file=str(enhancer_file),
+        output_dir=str(output_dir)
+    )
+    analyzer.load_data()
+    analyzer.build_network()
+    df = analyzer.analyze()
+    if "Tier1_Count" in df.columns and "Tier2_Count" in df.columns:
+        df = df[(df["Tier1_Count"] >= min_tier1) | (df["Tier2_Count"] >= min_tier2)]
+
+    if save:
+        out = output_dir / "gene_regulatory_depth.csv"
+        df.to_csv(out, index=False)
+        logger.info(f"Saved results to: {out}")
+        print(f"[Chrom-MESH] Saved: {out}")
+
+    return df
+
+
+
+
 
 if __name__ == "__main__":
     main()

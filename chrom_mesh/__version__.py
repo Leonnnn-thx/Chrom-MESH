@@ -5,6 +5,3 @@
 
 __version__ = "0.1.0"
 __author__ = "Tao Hongxu"
-__email__ = "kq_thx@163.com"
-__license__ = "MIT"
-__url__ = "https://github.com/159thx/Chrom-MESH"
