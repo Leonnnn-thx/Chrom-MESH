@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chrom-mesh"
-dynamic = ["version"]
+dynamic = "0.1.0"
 authors = [
     { name = "Tao Hongxu", email = "kq_thx@163.com" }
 ]
@@ -62,8 +62,7 @@ chrom-mesh = "chrom_mesh.cli:main"
 
 
 [tool.setuptools]
-
-packages = { find = { exclude = ["tests*", "docs*", "examples*"] } }
+packages = ["chrom_mesh", "chrom_mesh.core", "chrom_mesh.scripts", "chrom_mesh.utils"]
 include-package-data = true
 
 [tool.setuptools.package-data]
