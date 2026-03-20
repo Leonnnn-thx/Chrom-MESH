@@ -280,9 +280,13 @@ class LoopAnnotator:
 
         unassigned = df["intersection_type"].eq("Other")
 
-        m_pu = ((PR & ~EL) | (PL & ~ER)) & unassigned
-        m_eu = ((ER & ~PL) | (EL & ~PR)) & unassigned
-        m_uu = (~PL & ~PR & ~EL & ~ER) & unassigned
+
+        U_L = ~PL & ~EL
+        U_R = ~PR & ~ER
+        m_pu = ((PL & U_R) | (PR & U_L)) & unassigned
+        m_eu = ((EL & ~PL & U_R) | (ER & ~PR & U_L)) & unassigned
+        m_uu = (U_L & U_R) & unassigned
+
 
         df.loc[m_pu, "intersection_type"] = "Promoter-Undefined"
         df.loc[m_eu, "intersection_type"] = "Enhancer-Undefined"

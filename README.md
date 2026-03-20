@@ -122,7 +122,7 @@ chrom-mesh visualize \
 # Expected output files in ./test_output/visualize/network_Tcea1_Rb1cc1.pdf
 ```
 
-## Running on your own data 
+## Running on your own data
 
 ### **1) Identify active enhancers**
 
