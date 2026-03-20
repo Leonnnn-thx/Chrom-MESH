@@ -17,14 +17,11 @@ from typing import Dict, List, Any
 import logging
 from pathlib import Path
 
-
-
 logger = logging.getLogger("Chrom-MESH.Identifier")
 
 class RegulatoryNetworkAnalyzer:
     """
     Analyze regulatory depth of genes based on 3D chromatin topology.
-    
     """
     
     def __init__(
@@ -126,11 +123,6 @@ class RegulatoryNetworkAnalyzer:
         logger.info(f"Loaded {len(self.enhancers)} enhancers")
 
     def build_network(self) -> nx.Graph:
-        """
-        Build regulatory network using intersection_type logic.
-        Tier 1: Enhancer-Promoter (Cross-anchor matching)
-        Tier 2: Enhancer-Enhancer
-        """
         if self.loops is None:
             self.load_data()
 
@@ -140,22 +132,16 @@ class RegulatoryNetworkAnalyzer:
         stats_counter = defaultdict(int)
         
         # --- Process Tier 1: Enhancer-Promoter ---
-        # Logic: If interaction is E-P, connect Genes on one side to Enhancers on the other
         tier1_mask = self.loops[self.col_map['intersection_type']] == 'Enhancer-Promoter'
         tier1_loops = self.loops[tier1_mask]
         
         for _, row in tier1_loops.iterrows():
-            # Left Genes <-> Right Enhancers
             genes_L = self._split_items(row[self.col_map['p_l_genes']])
             enhs_R = self._split_items(row[self.col_map['e_r_ids']])
-            
-            # Right Genes <-> Left Enhancers
             genes_R = self._split_items(row[self.col_map['p_r_genes']])
             enhs_L = self._split_items(row[self.col_map['e_l_ids']])
-            
             dist = row[self.col_map['distance']] if self.col_map['distance'] else 0
             
-            # Add Edges (L genes - R enhancers)
             for g in genes_L:
                 pid = f"P:{g}"
                 self.graph.add_node(pid, node_type='promoter', genes=g)
@@ -165,7 +151,6 @@ class RegulatoryNetworkAnalyzer:
                     self.graph.add_edge(pid, eid, interaction_type='tier1', distance=dist)
                     stats_counter['tier1_edges'] += 1
 
-            # Add Edges (R genes - L enhancers)
             for g in genes_R:
                 pid = f"P:{g}"
                 self.graph.add_node(pid, node_type='promoter', genes=g)
@@ -204,9 +189,6 @@ class RegulatoryNetworkAnalyzer:
         return self.graph
 
     def analyze(self) -> pd.DataFrame:
-        """
-        Perform BFS analysis to identify gene layers and classify genes.
-        """
         if self.graph is None:
             self.build_network()
             
@@ -222,31 +204,24 @@ class RegulatoryNetworkAnalyzer:
         for promoter in promoter_nodes:
             gene_name = self.graph.nodes[promoter]['genes']
             
-            # BFS Level 1: Direct neighbors (Tier 1)
-            # Filter neighbors to ensure they are enhancers
             tier1_neighbors = {n for n in self.graph.neighbors(promoter) 
                                if self.graph.nodes[n].get('node_type') == 'enhancer'}
             
-            # BFS Level 2: Neighbors of Tier 1 (Tier 2)
             tier2_neighbors = set()
             for t1_node in tier1_neighbors:
-                # Get neighbors of T1 enhancer
                 next_neighbors = self.graph.neighbors(t1_node)
                 for t2_node in next_neighbors:
-                    # Must be enhancer, not the original promoter, and not already in Tier 1
                     if (t2_node != promoter and 
                         t2_node not in tier1_neighbors and 
                         self.graph.nodes[t2_node].get('node_type') == 'enhancer'):
                         tier2_neighbors.add(t2_node)
             
-            # Convert to clean IDs
             t1_ids = sorted([self.graph.nodes[n].get('enhancer_id', n) for n in tier1_neighbors])
             t2_ids = sorted([self.graph.nodes[n].get('enhancer_id', n) for n in tier2_neighbors])
             
             t1_count = len(t1_ids)
             t2_count = len(t2_ids)
             
-            # Classification
             reg_type = "Unclassified"
             if t1_count > 0:
                 if t2_count > 0:
@@ -256,7 +231,6 @@ class RegulatoryNetworkAnalyzer:
                     reg_type = "Shallow"
                     self.shallow_genes.append(gene_name)
             
-            # Store data
             self.gene_layers[gene_name] = {
                 'promoter_node': promoter,
                 'tier1': list(tier1_neighbors),
@@ -279,12 +253,136 @@ class RegulatoryNetworkAnalyzer:
         
         return pd.DataFrame(results)
 
+    # ==========================================
+    # NEW METHODS ADDED HERE
+    # ==========================================
+
+    def create_summary_statistics(self, filename='regulatory_depth_summary.txt'):
+        """
+        Create comprehensive summary statistics
+        """
+        output_file = self.output_dir / filename
+        logger.info("Creating summary statistics...")
+        
+        with open(output_file, 'w') as f:
+            f.write("=" * 70 + "\n")
+            f.write("REGULATORY DEPTH ANALYSIS - SUMMARY STATISTICS\n")
+            f.write("(interaction_type based analysis)\n")
+            f.write("=" * 70 + "\n\n")
+            
+            # Network statistics
+            f.write("NETWORK STATISTICS\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"Total nodes: {self.graph.number_of_nodes()}\n")
+            f.write(f"Total edges: {self.graph.number_of_edges()}\n")
+            
+            promoter_count = sum(
+                1 for n, attr in self.graph.nodes(data=True)
+                if attr.get('node_type') == 'promoter'
+            )
+            enhancer_count = sum(
+                1 for n, attr in self.graph.nodes(data=True)
+                if attr.get('node_type') == 'enhancer'
+            )
+            
+            f.write(f"Promoter nodes: {promoter_count}\n")
+            f.write(f"Enhancer nodes: {enhancer_count}\n\n")
+            
+            # Interaction type statistics
+            f.write("INTERACTION TYPE STATISTICS\n")
+            f.write("-" * 70 + "\n")
+            # Fixed: Use col_map instead of col
+            interaction_col = self.col_map['intersection_type']
+            interaction_counts = self.loops[interaction_col].value_counts()
+            for itype, count in interaction_counts.items():
+                f.write(f"{itype}: {count}\n")
+            f.write("\n")
+            
+            # Gene classification
+            f.write("GENE CLASSIFICATION\n")
+            f.write("-" * 70 + "\n")
+            total_genes = len(self.gene_layers)
+            f.write(f"Total genes analyzed: {total_genes}\n")
+            if total_genes > 0:
+                f.write(f"Deep Regulation genes: {len(self.deep_genes)} "
+                       f"({len(self.deep_genes)/total_genes*100:.1f}%)\n")
+                f.write(f"Shallow Regulation genes: {len(self.shallow_genes)} "
+                       f"({len(self.shallow_genes)/total_genes*100:.1f}%)\n\n")
+            
+            # Regulatory layer statistics
+            f.write("REGULATORY LAYER STATISTICS\n")
+            f.write("-" * 70 + "\n")
+            f.write("(All enhancers are sorted and deduplicated per gene)\n\n")
+            
+            if total_genes > 0:
+                tier1_counts = [l['tier1_count'] for l in self.gene_layers.values()]
+                tier2_counts = [l['tier2_count'] for l in self.gene_layers.values()]
+                
+                f.write("Tier 1 enhancers per gene:\n")
+                f.write(f"  Mean: {np.mean(tier1_counts):.2f}\n")
+                f.write(f"  Median: {np.median(tier1_counts):.0f}\n")
+                f.write(f"  Std Dev: {np.std(tier1_counts):.2f}\n")
+                f.write(f"  Range: {np.min(tier1_counts):.0f} - {np.max(tier1_counts):.0f}\n\n")
+                
+                f.write("Tier 2 enhancers per gene:\n")
+                f.write(f"  Mean: {np.mean(tier2_counts):.2f}\n")
+                f.write(f"  Median: {np.median(tier2_counts):.0f}\n")
+                f.write(f"  Std Dev: {np.std(tier2_counts):.2f}\n")
+                f.write(f"  Range: {np.min(tier2_counts):.0f} - {np.max(tier2_counts):.0f}\n\n")
+            
+            # Top genes by regulatory complexity
+            f.write("TOP 10 GENES BY REGULATORY COMPLEXITY\n")
+            f.write("-" * 70 + "\n")
+            
+            sorted_genes = sorted(
+                self.gene_layers.items(),
+                key=lambda x: x[1]['tier1_count'] + x[1]['tier2_count'],
+                reverse=True
+            )
+            
+            for i, (gene, layers) in enumerate(sorted_genes[:10], 1):
+                reg_type = 'Deep' if gene in self.deep_genes else 'Shallow'
+                f.write(f"{i:2d}. {gene:20s} - {reg_type:8s} - "
+                       f"Tier1: {layers['tier1_count']:3d}, "
+                       f"Tier2: {layers['tier2_count']:3d}, "
+                       f"Total: {layers['tier1_count'] + layers['tier2_count']:3d}\n")
+            
+            f.write("\n" + "=" * 70 + "\n")
+        
+        logger.info(f"Saved summary statistics to: {output_file}")
+        return self
+
+    def create_gene_lists(self, 
+                         deep_file='deep_regulation_genes.txt',
+                         shallow_file='shallow_regulation_genes.txt'):
+        """
+        Create gene lists for Deep and Shallow regulation
+        """
+        logger.info("Creating gene lists...")
+        
+        deep_path = self.output_dir / deep_file
+        shallow_path = self.output_dir / shallow_file
+        
+        # Save Deep genes
+        with open(deep_path, 'w') as f:
+            for gene in sorted(self.deep_genes):
+                f.write(f"{gene}\n")
+        logger.info(f"Saved {len(self.deep_genes)} Deep genes to: {deep_path}")
+        
+        # Save Shallow genes
+        with open(shallow_path, 'w') as f:
+            for gene in sorted(self.shallow_genes):
+                f.write(f"{gene}\n")
+        logger.info(f"Saved {len(self.shallow_genes)} Shallow genes to: {shallow_path}")
+        
+        return self
+
     def visualize(self):
         """Generate statistical visualizations"""
         try:
             import matplotlib.pyplot as plt
         except ImportError as e:
-            raise ImportError("Visualization requires matplotlib and seaborn.") from e
+            raise ImportError("Visualization requires matplotlib.") from e
 
         if not self.gene_layers:
             logger.warning("No analysis results to visualize. Run analyze() first.")
@@ -292,11 +390,9 @@ class RegulatoryNetworkAnalyzer:
 
         logger.info("Generating visualizations...")
         
-        # Prepare data for plotting
         tier1_counts = [d['tier1_count'] for d in self.gene_layers.values()]
         tier2_counts = [d['tier2_count'] for d in self.gene_layers.values()]
         
-        # Setup plot
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         fig.suptitle('Regulatory Depth Analysis', fontsize=16, fontweight='bold')
         
@@ -334,7 +430,7 @@ class RegulatoryNetworkAnalyzer:
         logger.info(f"Saved visualization to {out_path}")
 
     def save_results(self, filename: str = "gene_regulatory_layers.csv"):
-        """Save analysis results to files"""
+        """Save main analysis results to CSV and trigger sub-reports"""
         if not self.gene_layers:
             raise ValueError("No results to save. Run analyze() first.")
         
@@ -352,24 +448,17 @@ class RegulatoryNetworkAnalyzer:
             for k, v in self.gene_layers.items()
         ])
         
-        # Sort
         df = df.sort_values(['Regulation_Type', 'Total_Enhancers'], ascending=[True, False])
         
         out_csv = self.output_dir / filename
         df.to_csv(out_csv, index=False)
         logger.info(f"Saved detailed table to {out_csv}")
         
-        # 2. Save Gene Lists
-        with open(self.output_dir / "deep_regulation_genes.txt", "w") as f:
-            f.write("\n".join(sorted(self.deep_genes)))
-            
-        with open(self.output_dir / "shallow_regulation_genes.txt", "w") as f:
-            f.write("\n".join(sorted(self.shallow_genes)))
-            
-        logger.info("Saved gene lists.")
+        # 2. Trigger the new methods automatically
+        self.create_gene_lists()
+        self.create_summary_statistics()
 
     def get_statistics(self) -> Dict[str, Any]:
-        """Return summary statistics dict"""
         if not self.gene_layers:
             return {}
         
@@ -386,18 +475,6 @@ class RegulatoryNetworkAnalyzer:
 
 
 def run_identify(args):
-    """
-    Entry point for the chrom-mesh CLI.
-    
-    Parameters:
-    -----------
-    args : argparse.Namespace
-        Arguments passed from cli.py, including:
-        - loop_file: Path to loops
-        - enhancer_file: Path to enhancers
-        - output_dir: Where to save results
-        - viz: Boolean, whether to generate plots
-    """
     logger.info("🚀 Starting Regulatory Depth Analysis...")
     
     try:
@@ -410,9 +487,13 @@ def run_identify(args):
         analyzer.load_data()
         analyzer.build_network()
         results_df = analyzer.analyze()
-        analyzer.save_results()
+        
+        # This will now save the CSV, the txt lists, and the summary stats
+        analyzer.save_results() 
+        
         if hasattr(args, 'viz') and args.viz:
             analyzer.visualize()
+            
         stats = analyzer.get_statistics()
         logger.info("=== Analysis Summary ===")
         for k, v in stats.items():
@@ -426,56 +507,17 @@ def run_identify(args):
         logger.error(f"❌ Analysis failed: {str(e)}")
         raise  
 
-
-def main():
-    import argparse
-    import sys
-    
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-    parser = argparse.ArgumentParser(description="Chrom-MESH Identifier")
-    parser.add_argument("-l", "--loop_file", required=True)
-    parser.add_argument("-e", "--enhancer_file", required=True)
-    parser.add_argument("-o", "--output_dir", default=".")
-    parser.add_argument("--viz", action="store_true")
-
-    args = parser.parse_args()
-    run_identify(args)
-
 def run_analyze(
     loop_file=None,
     enhancer_file=None,
     output_dir=".",
     save=True
 ) -> pd.DataFrame:
-    """
-    Compatible analyze entry:
-    - run_analyze(args_namespace)
-    - run_analyze(loop_file=..., enhancer_file=..., output_dir=..., save=True)
-    """
     if hasattr(loop_file, "__dict__") and enhancer_file is None:
         args = loop_file
-
-        loop_file = (
-            getattr(args, "loops", None)
-            or getattr(args, "loop_file", None)
-            or getattr(args, "loop", None)
-            or getattr(args, "l", None)
-        )
-        enhancer_file = (
-            getattr(args, "enhancers", None)
-            or getattr(args, "enhancer_file", None)
-            or getattr(args, "enhancer", None)
-            or getattr(args, "e", None)
-        )
-        output_dir = (
-            getattr(args, "output", None)
-            or getattr(args, "output_dir", None)
-            or getattr(args, "outdir", None)
-            or getattr(args, "o", None)
-            or output_dir
-        )
-
+        loop_file = getattr(args, "loops", None) or getattr(args, "loop_file", None) or getattr(args, "l", None)
+        enhancer_file = getattr(args, "enhancers", None) or getattr(args, "enhancer_file", None) or getattr(args, "e", None)
+        output_dir = getattr(args, "output", None) or getattr(args, "output_dir", None) or getattr(args, "o", None) or output_dir
         min_tier1 = getattr(args, "min_tier1", 1)
         min_tier2 = getattr(args, "min_tier2", 1)
         save = getattr(args, "save", save)
@@ -483,10 +525,7 @@ def run_analyze(
         min_tier1, min_tier2 = 1, 1
 
     if loop_file is None or enhancer_file is None:
-        raise ValueError(
-            f"run_analyze requires loop_file and enhancer_file. "
-            f"Got loop_file={loop_file}, enhancer_file={enhancer_file}"
-        )
+        raise ValueError("run_analyze requires loop_file and enhancer_file.")
 
     output_dir = Path(output_dir)
     if output_dir.suffix in {".csv", ".tsv", ".txt"}:
@@ -501,20 +540,29 @@ def run_analyze(
     analyzer.load_data()
     analyzer.build_network()
     df = analyzer.analyze()
+    
     if "Tier1_Count" in df.columns and "Tier2_Count" in df.columns:
         df = df[(df["Tier1_Count"] >= min_tier1) | (df["Tier2_Count"] >= min_tier2)]
 
     if save:
-        out = output_dir / "gene_regulatory_depth.csv"
-        df.to_csv(out, index=False)
-        logger.info(f"Saved results to: {out}")
-        print(f"[Chrom-MESH] Saved: {out}")
+        # Save main CSV, lists, and summary
+        analyzer.save_results()
+        print(f"[Chrom-MESH] Saved comprehensive results to: {output_dir}")
 
     return df
 
+def main():
+    import argparse
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+    parser = argparse.ArgumentParser(description="Chrom-MESH Identifier")
+    parser.add_argument("-l", "--loop_file", required=True)
+    parser.add_argument("-e", "--enhancer_file", required=True)
+    parser.add_argument("-o", "--output_dir", default=".")
+    parser.add_argument("--viz", action="store_true")
 
-
+    args = parser.parse_args()
+    run_identify(args)
 
 if __name__ == "__main__":
     main()

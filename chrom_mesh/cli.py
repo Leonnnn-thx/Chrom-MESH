@@ -198,7 +198,7 @@ Examples:
     analyze_parser.add_argument(
         "-o", "--output",
         required=True,
-        help="Output file"
+        help="Output file path"
     )
     analyze_parser.add_argument(
         "--min-tier1",
